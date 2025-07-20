@@ -11,6 +11,7 @@ import { server } from "./server";
 // import metrics from "./metrics";
 import { swaggerOptions as adminSwagOptions } from "./admin-routes/swaggerOptions";
 import { swaggerOptions as mainSwagOptions } from "./swaggerOptions";
+import { sinkingYahtsService } from "./services/_index";
 import * as logger from "./utils/logger";
 dotenv.config();
 
@@ -26,6 +27,21 @@ try {
   }
   const db = drizzle(process.env.DATABASE_URL);
   logger.database("Database connection initialized successfully");
+  
+  // Initialize SinkingYachts realtime feed monitoring
+  if (process.env.ENABLE_SINKING_YACHTS_FEED !== "false") {
+    logger.info("Starting SinkingYachts realtime feed monitoring...");
+    sinkingYahtsService.startFeedMonitoring(process.env.SKIP_BULK_IMPORT === "true")
+      .then(() => {
+        logger.info("SinkingYachts feed monitoring started successfully");
+      })
+      .catch((error) => {
+        logger.error(`Failed to start SinkingYachts feed monitoring: ${error.message}`);
+        // Don't exit the process, let the server continue without feed monitoring
+      });
+  } else {
+    logger.info("SinkingYachts feed monitoring disabled by ENABLE_SINKING_YACHTS_FEED=false");
+  }
 } catch (error) {
   logger.error(
     `Failed to initialize database connection: ${error instanceof Error ? error.message : String(error)}`

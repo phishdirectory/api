@@ -14,6 +14,7 @@ import { logRequest } from "src/middleware/logRequest";
 import { db } from "src/utils/db";
 import { authenticateToken, getUserInfo } from "src/utils/jwt";
 import domainRouter from "./routes/domain";
+import sinkingYachtsRouter from "./routes/sinking-yachts";
 import userRouter from "./routes/user";
 const router = express.Router();
 router.use(express.json());
@@ -297,6 +298,7 @@ router.get("/metrics", logRequest, async (req, res) => {
 });
 
 router.use("/domain", logRequest, domainRouter);
+router.use("/sinking-yachts", logRequest, sinkingYachtsRouter);
 router.use("/user", userRouter);
 
 export default router;
