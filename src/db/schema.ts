@@ -7,7 +7,6 @@ import {
   json,
   pgEnum,
   pgMaterializedView,
-  pgRole,
   pgTable,
   pgView,
   timestamp,
@@ -36,6 +35,7 @@ export const permissionLevel = pgEnum("permission_level", [
   "user",
   "trusted",
   "admin",
+  "superadmin",
   "owner",
 ]);
 
@@ -48,16 +48,13 @@ export const useExtendedData = pgEnum("use_extended_data", [
 export const users = pgTable(
   "users",
   {
-    id: bigserial({ mode: "number" }).primaryKey().unique(),
-    uuid: uuid().defaultRandom().unique(),
+    local_id: bigserial({ mode: "number" }).primaryKey().unique(),
+    pd_id: varchar().notNull().unique(),
     firstName: varchar().notNull(),
     lastName: varchar().notNull(),
     email: varchar().notNull().unique(),
-    password: varchar().notNull(),
     permissionLevel: permissionLevel().notNull().default("user"),
     useExtendedData: useExtendedData().notNull().default("off"),
-    invitedToSlack: boolean().default(false).notNull(),
-    slackInviteAt: timestamp(),  // When null, welcome email hasn't been sent. When set, it's when to send the Slack invite
     ...timestamps,
   },
   (table) => [

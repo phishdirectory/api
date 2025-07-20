@@ -6,7 +6,7 @@ import { count, eq } from "drizzle-orm";
 import { loginAttempts, requestsLog, users } from "src/db/schema";
 import { LoginEmail } from "src/email/login";
 import { WelcomeEmail } from "src/email/welcome";
-import { inviteToSlack } from "src/func/slackInvite";
+import { hashData } from "src/func/hashData";
 import { logRequest } from "src/middleware/logRequest";
 import { db } from "src/utils/db";
 import {
@@ -21,8 +21,6 @@ const router = express.Router();
 router.use(express.json());
 router.use(express.urlencoded({ extended: false }));
 router.use(logRequest);
-
-let saltRounds = 10;
 
 /**
  * POST /user/signup
@@ -47,14 +45,20 @@ let saltRounds = 10;
 router.post("/signup", async (req, res) => {
   // metrics.increment("endpoint.user.signup");
   const body = req.body;
-  const { firstName, lastName, email, password } = body;
+  const { firstName, lastName, email, password, password_confirmation } = body;
 
-  if (!firstName || !lastName || !email || !password) {
-    return res
-      .status(400)
-      .json(
-        "Invalid arguments. Please provide firstName, lastName, email, and password"
-      );
+  const requiredFields = {
+    firstName: "First name is required",
+    lastName: "Last name is required",
+    email: "Email is required",
+    password: "Password is required",
+    password_confirmation: "Password confirmation is required",
+  };
+
+  for (const [field, errorMessage] of Object.entries(requiredFields)) {
+    if (!req.body[field]) {
+      return res.status(400).json(errorMessage);
+    }
   }
 
   let isDisposable = await disposableEmailDetector(email as string);
@@ -70,97 +74,115 @@ router.post("/signup", async (req, res) => {
     return res.status(400).json("Invalid email address");
   }
 
-  // Check if the user already exists
-  const user = await db.query.users.findFirst({
-    where: (users) => eq(users.email, email),
-  });
-
-  if (user) {
-    return res.status(400).json("User with that email already exists");
+  // check if passwords match
+  if (password !== password_confirmation) {
+    return res.status(400).json("Passwords do not match");
   }
 
-  const salt = bcrypt.genSaltSync(saltRounds);
-  let passHash = await bcrypt.hash(password, salt);
+  // password must be 8 chars
+  if (password.length < 8) {
+    return res.status(400).json("Password must be at least 8 characters");
+  }
 
+  // do logic for checking if user exists by email, then create user if not
   try {
-    const [newUser] = await db
-      .insert(users)
-      .values({
-        firstName: firstName,
-        lastName: lastName,
-        email: email,
-        password: passHash,
-      })
-      .returning();
+    const apiKey = process.env.INTERNAL_API_KEY; // Assuming you store the API key in environment variables
+    const hashKey = process.env.INTERNAL_HASH_KEY; // Assuming you store the hash key in environment variables
 
-    if (
-      process.env.NODE_ENV === "production" ||
-      process.env.SEND_DEV_EMAILS === "true"
-    ) {
-      // Send welcome email after user is created
-      await resend.emails.send({
-        from: "phish.directory <onboarding@transactional.phish.directory>",
-        to: newUser.email,
-        subject: "Welcome to Phish Directory",
-        // @ts-expect-error
-        react: WelcomeEmail({ firstName: newUser.firstName }),
-      });
-
-      // Send team notification email
-      await resend.emails.send({
-        from: "rbt [phish.directory] <bot@transactional.phish.directory>",
-        to: "team@phish.directory",
-        subject: "New User Signup",
-        text: `New User Signup\n\nName: ${newUser.firstName} ${newUser.lastName}\nEmail: ${newUser.email}`,
-        html: `<html><body><h1>New User Signup</h1><p>Name: ${newUser.firstName} ${newUser.lastName}</p><p>Email: ${newUser.email}</p></body></html>`,
-      });
-
-      // Handle Slack invite asynchronously with 5-minute delay
-      setTimeout(
-        async () => {
-          try {
-            const response = await inviteToSlack(newUser.email);
-            if (response.success !== true) {
-              console.error(
-                `Failed to invite ${newUser.email} to Slack: ${response.data.error}`
-              );
-
-              await resend.emails.send({
-                from: "rbt [phish.directory] <bot@transactional.phish.directory>",
-                to: "jasper.mayone@phish.directory",
-                subject: "Failed Slack Invite",
-                text: `Failed to invite ${newUser.email} to Slack: ${response.data.error}`,
-                html: `<html><body><h1>Failed Slack Invite</h1><p>Email: ${newUser.email}</p><p>Error: ${response.data.error}</p></body></html>`,
-              });
-            } else {
-              await db
-                .update(users)
-                .set({
-                  invitedToSlack: true,
-                })
-                .where(eq(users.id, newUser.id));
-            }
-          } catch (error) {
-            console.error(
-              `Error sending Slack invite to ${newUser.email}:`,
-              error
-            );
-          }
-        },
-        5 * 60 * 1000
-      ); // 5 minutes in milliseconds
+    if (!apiKey) {
+      console.error("API key is missing");
+      return res.status(500).json("Server configuration error");
     }
 
-    // Send success response with the user's uuid
-    return res.status(200).json({
-      message: "User created successfully, please login.",
-      uuid: newUser.uuid,
-    });
-  } catch (error: any) {
-    return res.status(500).json({
-      message: "Error creating user",
-      error: error.message,
-    });
+    // Check if user exists
+    const checkResponse = await fetch(
+      `http://localhost:3000/api/v1/users/by_email?email=${encodeURIComponent(email)}`,
+      {
+        method: "GET",
+        headers: {
+          "x-api-key": apiKey,
+          "Content-Type": "application/json",
+        } as HeadersInit, // Type assertion to fix the error
+      }
+    );
+
+    // If user exists (status 200), return error
+    if (checkResponse.status === 200) {
+      return res.status(400).json("User with this email already exists");
+    }
+
+    // If user not found (status 404), proceed with creation
+    if (checkResponse.status === 404) {
+      const errorData = await checkResponse.json();
+
+      if (errorData.error === "User not found") {
+        let unhashedData = {
+          first_name: firstName,
+          last_name: lastName,
+          email: email,
+          password: password,
+          password_confirmation: password_confirmation,
+        };
+        const hashedData = await hashData(unhashedData, hashKey);
+
+        // Create user
+        const createResponse = await fetch(
+          "http://localhost:3000/api/v1/users",
+          {
+            method: "POST",
+            headers: {
+              "x-api-key": apiKey,
+              "Content-Type": "application/json",
+            } as HeadersInit, // Type assertion to fix the error
+            body: JSON.stringify({
+              hashed_data: hashedData,
+            }),
+          }
+        );
+
+        if (createResponse.ok) {
+          const newUserData = await createResponse.json();
+
+          if (
+            process.env.NODE_ENV === "production" ||
+            process.env.SEND_DEV_EMAILS === "true"
+          ) {
+            // Send welcome email after user is created
+            await resend.emails.send({
+              from: "phish.directory <onboarding@transactional.phish.directory>",
+              to: email,
+              subject: "Welcome to Phish Directory",
+              // @ts-expect-error
+              react: WelcomeEmail({ firstName: firstName }),
+            });
+
+            // Send team notification email
+            await resend.emails.send({
+              from: "rbt [phish.directory] <bot@transactional.phish.directory>",
+              to: "team@phish.directory",
+              subject: "New User Signup",
+              text: `New User Signup\n\nName: ${firstName} ${lastName}\nEmail: ${email}`,
+              html: `<html><body><h1>New User Signup</h1><p>Name: ${firstName} ${lastName}</p><p>Email: ${email}</p></body></html>`,
+            });
+          }
+
+          // Successful signup
+          return res.status(201).json({
+            message: "User created successfully",
+            user: newUserData,
+          });
+        } else {
+          // Handle user creation failure
+          return res.status(500).json("Failed to create user");
+        }
+      }
+    }
+
+    // Handle other unexpected status codes
+    return res.status(500).json("Unexpected error during user verification");
+  } catch (error) {
+    console.error("Error in signup process:", error);
+    return res.status(500).json("Internal server error");
   }
 });
 
