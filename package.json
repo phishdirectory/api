@@ -33,7 +33,7 @@
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
     "drizzle-kit": "^0.30.5",
-    "drizzle-orm": "^0.41.0",
+    "drizzle-orm": "^0.45.2",
     "eslint-plugin-drizzle": "^0.2.3",
     "express": "^4.21.2",
     "express-jsdoc-swagger": "^1.8.0",
